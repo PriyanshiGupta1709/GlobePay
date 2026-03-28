@@ -1,8 +1,10 @@
 'use client';
 
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
+import { useMutation, useQuery } from 'convex/react';
+import { api } from '@/convex/_generated/api';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Mail, Lock, Eye, EyeOff, ArrowRight, QrCode, X, Plus, Zap, TrendingDown, TrendingUp, Flashlight, Wallet, ChevronLeft, Sparkles, TrendingUp as Trending } from 'lucide-react';
+import { Mail, Lock, Eye, EyeOff, ArrowRight, QrCode, X, Plus, Zap, TrendingDown, TrendingUp, Flashlight, Wallet, ChevronLeft, Sparkles, TrendingUp as Trending, AlertCircle, Camera, CheckCircle, Zap as ZapIcon, Download, FileText } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
 export default function Page() {
@@ -130,7 +132,7 @@ function LoginPage({ setIsLoggedIn }: LoginPageProps) {
                   placeholder="you@example.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  className="w-full pl-12 pr-4 py-3 bg-white border-2 border-gray-400 rounded-lg text-gray-900 placeholder-gray-500 focus:outline-none focus:border-gray-600 focus:ring-2 focus:ring-gray-400/30 transition-all font-semibold"
+                  className="w-full pl-12 pr-4 py-3 bg-white border-2 border-gray-400 rounded-lg text-gray-900 placeholder-gray-500 focus:outline-none focus:border-gray-600 focus:ring-2 focus:ring-gray-400/30 transition-all"
                 />
               </div>
             </motion.div>
@@ -151,7 +153,7 @@ function LoginPage({ setIsLoggedIn }: LoginPageProps) {
                   placeholder="Enter your password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="w-full pl-12 pr-12 py-3 bg-white border-2 border-gray-400 rounded-lg text-gray-900 placeholder-gray-500 focus:outline-none focus:border-gray-600 focus:ring-2 focus:ring-gray-400/30 transition-all font-semibold"
+                  className="w-full pl-12 pr-12 py-3 bg-white border-2 border-gray-400 rounded-lg text-gray-900 placeholder-gray-500 focus:outline-none focus:border-gray-600 focus:ring-2 focus:ring-gray-400/30 transition-all"
                 />
                 <motion.button
                   whileHover={{ scale: 1.1 }}
@@ -197,7 +199,7 @@ function LoginPage({ setIsLoggedIn }: LoginPageProps) {
               transition={{ delay: 1.4 }}
               type="submit"
               disabled={isLoading}
-              className="w-full py-3 bg-gradient-to-r from-gray-800 to-gray-700 text-white font-black rounded-lg hover:from-gray-700 hover:to-gray-600 transition-all uppercase tracking-widest border-2 border-gray-800 active:scale-95 shadow-md text-lg flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full py-3 bg-gradient-to-r from-gray-800 to-gray-700 text-white font-black rounded-lg hover:from-gray-700 hover:to-gray-600 transition-all uppercase tracking-widest border-2 border-gray-900 shadow-lg active:scale-95 disabled:opacity-50 flex items-center justify-center gap-2"
             >
               {isLoading ? (
                 <>
@@ -253,27 +255,120 @@ function LoginPage({ setIsLoggedIn }: LoginPageProps) {
   );
 }
 
+interface PaymentBreakdown {
+  totalUSD: number;
+  deductedUSD: number;
+  deductedINR: number;
+  emergencyFee: number;
+  merchant: string;
+}
+
+interface Transaction {
+  id: string;
+  name: string;
+  amount: string;
+  time: string;
+  bgColor: string;
+  borderColor: string;
+  amountColor: string;
+  note?: string;
+  baseAmount?: number;
+  fxFee?: number;
+  timestamp?: string;
+}
+
+interface ReceiptData {
+  merchant: string;
+  baseAmount: number;
+  fxFee: number;
+  totalAmount: number;
+  timestamp: string;
+  transactionId: string;
+  status: string;
+}
+
 // GlobePay Component (Main App)
 function GlobePay() {
   const [showAddMoney, setShowAddMoney] = useState(false);
   const [showQRScanner, setShowQRScanner] = useState(false);
   const [showWallet, setShowWallet] = useState(false);
   const [showTrends, setShowTrends] = useState(false);
+  const [showLiquidityError, setShowLiquidityError] = useState(false);
+  const [showSuccessCard, setShowSuccessCard] = useState(false);
+  const [showReceiptModal, setShowReceiptModal] = useState(false);
+  const [selectedReceipt, setSelectedReceipt] = useState<ReceiptData | null>(null);
   const [selectedInsight, setSelectedInsight] = useState<string | null>(null);
   const [amount, setAmount] = useState('');
   const [selectedBank, setSelectedBank] = useState('HDFC');
   const [flashOn, setFlashOn] = useState(false);
   const [convertedAmount, setConvertedAmount] = useState('');
   const [convertTo, setConvertTo] = useState('USD');
-  const [walletCurrencies, setWalletCurrencies] = useState({
-    USD: 560,
-    EUR: 480,
+  const [activeChartTab, setActiveChartTab] = useState('USD');
+  const [loadingAddMoney, setLoadingAddMoney] = useState(false);
+  const [loadingQRPay, setLoadingQRPay] = useState(false);
+  const [currentExchangeRate, setCurrentExchangeRate] = useState(83.5);
+  const [shortfallAmount, setShortfallAmount] = useState(0);
+  const [cameraActive, setCameraActive] = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [insufficientUSD, setInsufficientUSD] = useState(false);
+  const [paymentBreakdown, setPaymentBreakdown] = useState<PaymentBreakdown | null>(null);
+  const [quickConvertCurrency, setQuickConvertCurrency] = useState<string | null>(null);
+  const [quickConvertRate, setQuickConvertRate] = useState<number | null>(null);
+  
+  // State for wallet currencies - tracking local balances
+  const [localWalletCurrencies, setLocalWalletCurrencies] = useState({
+    INR: 50000,
+    USD: 150.50,
+    EUR: 120.75,
     GBP: 390,
     JPY: 5200
   });
-  const [activeChartTab, setActiveChartTab] = useState('USD');
-  const [totalBalance, setTotalBalance] = useState(45230);
+
   const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+
+  // Convex hooks
+  const loadWalletMutation = useMutation(api.ledger.loadWallet);
+  const processPaymentFromQrScanMutation = useMutation(api.ledger.processPaymentFromQrScan);
+  const walletData = useQuery(api.ledger.getWallet);
+
+  // Exchange rates for conversion
+  const conversionRates: Record<string, number> = {
+    USD: 0.012,
+    EUR: 0.011,
+    GBP: 0.0095,
+    JPY: 1.8
+  };
+
+  // FIX 1: Calculate total balance from all currencies converted to INR
+  const calculateTotalBalance = (currencies: typeof localWalletCurrencies) => {
+    let total = currencies.INR || 0;
+    
+    // Convert USD to INR (using inverse of conversion rate)
+    if (currencies.USD > 0) {
+      total += currencies.USD * (1 / conversionRates.USD);
+    }
+    
+    // Convert EUR to INR
+    if (currencies.EUR > 0) {
+      total += currencies.EUR * (1 / conversionRates.EUR);
+    }
+    
+    // Convert GBP to INR
+    if (currencies.GBP > 0) {
+      total += currencies.GBP * (1 / conversionRates.GBP);
+    }
+    
+    // JPY conversion (JPY already in correct rate)
+    if (currencies.JPY > 0) {
+      total += currencies.JPY / conversionRates.JPY;
+    }
+    
+    return Math.floor(total);
+  };
+
+  // Calculate total balance whenever currencies change
+  const totalBalance = calculateTotalBalance(localWalletCurrencies);
 
   const weeklyChartData: Record<string, Array<{ day: string; price: number }>> = {
     USD: [
@@ -344,7 +439,8 @@ function GlobePay() {
       icon: TrendingDown,
       bgColor: 'bg-gray-200',
       borderColor: 'border-gray-300',
-      textColor: 'text-red-700'
+      textColor: 'text-red-700',
+      rate: 83.5
     },
     {
       currency: 'EUR',
@@ -354,7 +450,8 @@ function GlobePay() {
       icon: TrendingUp,
       bgColor: 'bg-gray-200',
       borderColor: 'border-gray-300',
-      textColor: 'text-blue-700'
+      textColor: 'text-blue-700',
+      rate: 90.2
     },
     {
       currency: 'GBP',
@@ -364,7 +461,8 @@ function GlobePay() {
       icon: Zap,
       bgColor: 'bg-gray-200',
       borderColor: 'border-gray-300',
-      textColor: 'text-green-700'
+      textColor: 'text-green-700',
+      rate: 106.0
     },
     {
       currency: 'JPY',
@@ -374,68 +472,310 @@ function GlobePay() {
       icon: TrendingDown,
       bgColor: 'bg-gray-200',
       borderColor: 'border-gray-300',
-      textColor: 'text-orange-700'
+      textColor: 'text-orange-700',
+      rate: 0.62
     }
   ];
 
-  const conversionRates: Record<string, number> = {
-    USD: 0.012,
-    EUR: 0.011,
-    GBP: 0.0095,
-    JPY: 1.8
+  // Sample transaction data with receipt info
+  const transactions: Transaction[] = [
+    { 
+      id: 'txn_001',
+      name: 'Payment to Acme Corp', 
+      amount: '-₹2,500', 
+      time: '2 hours ago', 
+      bgColor: 'bg-gray-200', 
+      borderColor: 'border-gray-400', 
+      amountColor: 'text-red-700',
+      note: 'emergency INR settled',
+      baseAmount: 2400,
+      fxFee: 100,
+      timestamp: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()
+    },
+    { 
+      id: 'txn_002',
+      name: 'Received from Client', 
+      amount: '+₹5,000', 
+      time: '5 hours ago', 
+      bgColor: 'bg-gray-200', 
+      borderColor: 'border-gray-400', 
+      amountColor: 'text-green-700',
+      note: 'normal transfer',
+      baseAmount: 5000,
+      fxFee: 0,
+      timestamp: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString()
+    },
+    { 
+      id: 'txn_003',
+      name: 'Currency Exchange', 
+      amount: '₹1,200 → $15', 
+      time: 'Yesterday', 
+      bgColor: 'bg-gray-200', 
+      borderColor: 'border-gray-400', 
+      amountColor: 'text-blue-700',
+      note: 'emergency INR settlement applied',
+      baseAmount: 1000,
+      fxFee: 200,
+      timestamp: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+    }
+  ];
+
+  // Handle receipt download
+  const handleDownloadReceipt = (tx: Transaction) => {
+    if (!tx.baseAmount) return;
+    
+    const receipt: ReceiptData = {
+      merchant: tx.name,
+      baseAmount: tx.baseAmount,
+      fxFee: tx.fxFee || 0,
+      totalAmount: tx.baseAmount + (tx.fxFee || 0),
+      timestamp: tx.timestamp || new Date().toISOString(),
+      transactionId: tx.id,
+      status: 'Completed'
+    };
+    
+    setSelectedReceipt(receipt);
+    setShowReceiptModal(true);
   };
 
-  React.useEffect(() => {
-    if (showQRScanner && videoRef.current) {
-      navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
-        .then(stream => {
-          videoRef.current!.srcObject = stream;
-        })
-        .catch(err => console.error('Camera access denied:', err));
-    }
-  }, [showQRScanner]);
+  // Start camera scanner
+  const startScanner = async () => {
+    try {
+      setCameraError(null);
+      const constraints = {
+        video: {
+          facingMode: 'environment',
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        },
+        audio: false
+      };
 
-  const handleAddMoney = () => {
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      streamRef.current = stream;
+
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.onloadedmetadata = () => {
+          videoRef.current?.play().catch(err => console.error('Play error:', err));
+        };
+      }
+
+      setCameraActive(true);
+    } catch (error: any) {
+      console.error('Camera error:', error);
+      let errorMessage = 'Unable to access camera';
+      
+      if (error.name === 'NotAllowedError') {
+        errorMessage = 'Camera permission denied. Please enable in settings.';
+      } else if (error.name === 'NotFoundError') {
+        errorMessage = 'No camera device found.';
+      } else if (error.name === 'NotReadableError') {
+        errorMessage = 'Camera is already in use by another app.';
+      }
+
+      setCameraError(errorMessage);
+      setCameraActive(false);
+    }
+  };
+
+  // Stop camera scanner
+  const stopScanner = () => {
+    if (streamRef.current) {
+      const tracks = streamRef.current.getTracks();
+      tracks.forEach(track => track.stop());
+      streamRef.current = null;
+    }
+
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+
+    setCameraActive(false);
+    setCameraError(null);
+  };
+
+  // Handle QR code capture (simulate scanning)
+  const handleCapture = async () => {
+    setLoadingQRPay(true);
+    try {
+      // Mock payment amount: 500 USD cents = $5.00
+      const mockAmountUSDCents = 50000;
+      const mockAmountUSD = mockAmountUSDCents / 100;
+      const inrPerUsd = currentExchangeRate;
+      const currentUSDCents = walletData ? walletData.balanceUSD : 0;
+      const currentINRPaisa = walletData ? walletData.balanceINR : 0;
+
+      // Calculate emergency fee scenario
+      let deductedUSD = 0;
+      let deductedINR = 0;
+      let emergencyFee = 0;
+
+      if (currentUSDCents >= mockAmountUSDCents) {
+        // Enough USD, no emergency fee needed
+        deductedUSD = mockAmountUSD;
+        setInsufficientUSD(false);
+      } else {
+        // USD shortfall, will use INR with emergency fee
+        deductedUSD = currentUSDCents / 100;
+        const shortfallUSDCents = mockAmountUSDCents - currentUSDCents;
+        const shortfallUSD = shortfallUSDCents / 100;
+        
+        // Calculate INR debit with 2% emergency fee
+        const inrNeeded = shortfallUSD * inrPerUsd;
+        emergencyFee = inrNeeded * 0.02;
+        deductedINR = inrNeeded + emergencyFee;
+        setInsufficientUSD(true);
+      }
+
+      const qrPayload = JSON.stringify({
+        v: 1,
+        t: 'pay',
+        merchant: 'Test Merchant',
+        amountUSDCents: mockAmountUSDCents,
+      });
+
+      // Call processPaymentFromQrScan with currentExchangeRate
+      const result = await processPaymentFromQrScanMutation({
+        qrPayload,
+        inrPerUsd,
+      });
+
+      // Set payment breakdown for success card
+      setPaymentBreakdown({
+        totalUSD: mockAmountUSD,
+        deductedUSD,
+        deductedINR,
+        emergencyFee,
+        merchant: 'Test Merchant'
+      });
+
+      setShowSuccessCard(true);
+      stopScanner();
+      setShowQRScanner(false);
+    } catch (error: any) {
+      // Extract shortfall amount from error message or calculate it
+      const errorMsg = error.message || 'Unknown error';
+      
+      if (errorMsg.includes('Insufficient USD and INR')) {
+        // Calculate approximate shortfall (500 USD cents as mock payment)
+        const mockPaymentCents = 50000;
+        const currentUSDCents = walletData ? walletData.balanceUSD : 0;
+        const currentINRPaisa = walletData ? walletData.balanceINR : 0;
+        const currentINRRupees = currentINRPaisa / 100;
+        
+        // Calculate how much INR would be needed
+        const inrNeeded = (mockPaymentCents - currentUSDCents) * currentExchangeRate;
+        const shortfallINRRupees = Math.max(0, inrNeeded - currentINRRupees);
+        
+        setShortfallAmount(shortfallINRRupees);
+        setShowLiquidityError(true);
+        stopScanner();
+        setShowQRScanner(false);
+      } else {
+        alert(`Payment failed: ${errorMsg}`);
+      }
+    } finally {
+      setLoadingQRPay(false);
+    }
+  };
+
+  const handleAddMoney = async () => {
     if (!amount || parseFloat(amount) <= 0) {
       alert('Please enter a valid amount');
       return;
     }
 
-    const addAmount = parseFloat(amount);
-    setTotalBalance(prev => prev + addAmount);
-    setWalletCurrencies(prev => ({
-      ...prev,
-      INR: (prev.INR || 0) + addAmount
-    }));
+    setLoadingAddMoney(true);
+    try {
+      // Convert Rupees to paisa (1 INR = 100 paisa)
+      const amountINRPaisa = Math.floor(parseFloat(amount) * 100);
+      
+      // Determine target currency and rate
+      const targetCurrency = quickConvertCurrency || 'INR';
+      const inrPerUnit = quickConvertRate || 1;
+      
+      // Call loadWallet with the appropriate parameters
+      const result = await loadWalletMutation({
+        amountINRPaisa,
+        targetCurrency,
+        inrPerUnit,
+      });
 
-    alert(`Successfully added ₹${amount} from ${selectedBank} Bank!`);
-    setAmount('');
-    setShowAddMoney(false);
+      alert(`Successfully added ₹${amount} from ${selectedBank} Bank at rate ₹${inrPerUnit}/${targetCurrency}!`);
+      setAmount('');
+      setShowAddMoney(false);
+      setQuickConvertCurrency(null);
+      setQuickConvertRate(null);
+    } catch (error: any) {
+      alert(`Error: ${error.message || 'Failed to add money'}`);
+    } finally {
+      setLoadingAddMoney(false);
+    }
   };
 
-  const handleCurrencyConvert = () => {
+  // FIX 2: Handle currency conversion FROM INR to other currencies
+  const handleConvertCurrency = () => {
     if (!convertedAmount || parseFloat(convertedAmount) <= 0) {
       alert('Please enter a valid amount');
       return;
     }
 
-    const convertAmount = parseFloat(convertedAmount);
-    const rate = conversionRates[convertTo];
-    const convertedValue = parseFloat((convertAmount * rate).toFixed(2));
+    const inrAmount = parseFloat(convertedAmount);
+    const targetCurrencyCode = convertTo;
 
-    setWalletCurrencies(prev => ({
+    // Check if user has enough INR
+    if (localWalletCurrencies.INR < inrAmount) {
+      alert('Insufficient INR balance for conversion');
+      return;
+    }
+
+    // Calculate how much foreign currency to add
+    const inrToForeignRate = conversionRates[targetCurrencyCode];
+    const foreignAmount = inrAmount * inrToForeignRate;
+
+    // Update local wallet: deduct from INR, add to target currency
+    setLocalWalletCurrencies(prev => ({
       ...prev,
-      [convertTo]: (prev[convertTo as keyof typeof prev] || 0) + convertedValue
+      INR: prev.INR - inrAmount,
+      [targetCurrencyCode]: (prev[targetCurrencyCode as keyof typeof prev] || 0) + foreignAmount
     }));
 
-    alert(`Successfully converted ₹${convertedAmount} to ${convertedValue} ${convertTo}!`);
+    // Show success message
+    alert(`Successfully converted ₹${inrAmount.toFixed(2)} to ${foreignAmount.toFixed(2)} ${targetCurrencyCode}!`);
     setConvertedAmount('');
   };
 
-  const handleInsightClick = (currency: string) => {
+  const handleAutoConvertINR = () => {
+    setShowLiquidityError(false);
+    setAmount(Math.ceil(shortfallAmount).toString());
+    setShowAddMoney(true);
+  };
+
+  const handleInsightClick = (currency: string, rate: number) => {
     setSelectedInsight(currency);
     setActiveChartTab(currency);
+    setCurrentExchangeRate(rate);
     setShowTrends(true);
+  };
+
+  // Handle Quick Convert from AI Strategy
+  const handleQuickConvert = () => {
+    setQuickConvertCurrency(activeChartTab);
+    setQuickConvertRate(currentExchangeRate);
+    setShowTrends(false);
+    setShowAddMoney(true);
+  };
+
+  // Handle QR Scanner open/close
+  const handleOpenQRScanner = () => {
+    setShowQRScanner(true);
+    setCameraError(null);
+  };
+
+  const handleCloseQRScanner = () => {
+    stopScanner();
+    setShowQRScanner(false);
   };
 
   const containerVariants = {
@@ -477,6 +817,37 @@ function GlobePay() {
         ease: 'easeInOut'
       }
     }
+  };
+
+  const errorOverlayVariants = {
+    hidden: { opacity: 0, scale: 0.8 },
+    visible: {
+      opacity: 1,
+      scale: 1,
+      transition: { type: 'spring', stiffness: 300, damping: 30 }
+    },
+    exit: { opacity: 0, scale: 0.8, transition: { duration: 0.2 } }
+  };
+
+  const successCardVariants = {
+    hidden: { opacity: 0, y: 50 },
+    visible: {
+      opacity: 1,
+      y: 0,
+      transition: { type: 'spring', stiffness: 200, damping: 20 }
+    },
+    exit: { opacity: 0, y: 50, transition: { duration: 0.2 } }
+  };
+
+  const receiptModalVariants = {
+    hidden: { opacity: 0, scale: 0.9, y: 50 },
+    visible: {
+      opacity: 1,
+      scale: 1,
+      y: 0,
+      transition: { type: 'spring', stiffness: 300, damping: 25 }
+    },
+    exit: { opacity: 0, scale: 0.9, y: 50, transition: { duration: 0.2 } }
   };
 
   return (
@@ -534,14 +905,15 @@ function GlobePay() {
         {/* Currency Pills */}
         <motion.div variants={itemVariants} className="flex gap-4 mb-10 overflow-x-auto pb-2">
           {[
-            { symbol: 'USD', amount: walletCurrencies.USD, flag: '🇺🇸' },
-            { symbol: 'EUR', amount: walletCurrencies.EUR, flag: '🇪🇺' },
-            { symbol: 'GBP', amount: walletCurrencies.GBP, flag: '🇬🇧' }
+            { symbol: 'INR', amount: localWalletCurrencies.INR, flag: '🇮🇳' },
+            { symbol: 'USD', amount: localWalletCurrencies.USD, flag: '🇺🇸' },
+            { symbol: 'EUR', amount: localWalletCurrencies.EUR, flag: '🇪🇺' },
+            { symbol: 'GBP', amount: localWalletCurrencies.GBP, flag: '🇬🇧' }
           ].map((currency) => (
             <motion.div
               key={currency.symbol}
               whileHover={{ scale: 1.08, y: -8 }}
-              className="flex-shrink-0 bg-gradient-to-br from-white to-gray-200 text-gray-900 border-2 border-gray-400 rounded-full px-8 py-4 hover:shadow-xl transition-all cursor-pointer font-bold shadow-md hover:border-gray-500"
+              className="flex-shrink-0 bg-gradient-to-br from-white to-gray-200 text-gray-900 border-2 border-gray-400 rounded-full px-8 py-4 hover:shadow-xl transition-all cursor-pointer font-bold shadow-md"
             >
               <p className="text-xs text-gray-600 uppercase tracking-widest">{currency.symbol}</p>
               <p className="text-lg font-black text-gray-900">{currency.amount.toLocaleString()}</p>
@@ -566,7 +938,7 @@ function GlobePay() {
                   key={idx}
                   variants={itemVariants}
                   whileHover={{ scale: 1.05, y: -5 }}
-                  onClick={() => handleInsightClick(insight.currency)}
+                  onClick={() => handleInsightClick(insight.currency, insight.rate)}
                   className={`${insight.bgColor} border-2 ${insight.borderColor} rounded-2xl p-6 relative overflow-hidden cursor-pointer transition-all shadow-lg hover:shadow-xl text-left`}
                 >
                   <div className="relative z-10">
@@ -621,28 +993,48 @@ function GlobePay() {
         <motion.div variants={itemVariants}>
           <div className="flex items-center gap-3 mb-6">
             <h3 className="text-2xl font-black text-white uppercase tracking-wider drop-shadow-lg">
-              Recent Activity
+              Global Ledger
             </h3>
           </div>
           <div className="space-y-3">
-            {[
-              { name: 'Payment to Acme Corp', amount: '-₹2,500', time: '2 hours ago', bgColor: 'bg-gray-200', borderColor: 'border-gray-400', amountColor: 'text-red-700' },
-              { name: 'Received from Client', amount: '+₹5,000', time: '5 hours ago', bgColor: 'bg-gray-200', borderColor: 'border-gray-400', amountColor: 'text-green-700' },
-              { name: 'Currency Exchange', amount: '₹1,200 → $15', time: 'Yesterday', bgColor: 'bg-gray-200', borderColor: 'border-gray-400', amountColor: 'text-blue-700' }
-            ].map((tx, i) => (
+            {transactions.map((tx, i) => (
               <motion.div
                 key={i}
                 whileHover={{ x: 8, scale: 1.02 }}
                 className={`${tx.bgColor} border-2 ${tx.borderColor} rounded-xl p-5 cursor-pointer transition-all shadow-md hover:shadow-lg`}
               >
-                <div className="flex justify-between items-center">
-                  <div>
-                    <p className="text-gray-900 font-bold text-lg">{tx.name}</p>
+                <div className="flex justify-between items-start gap-3">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-3 mb-2">
+                      <p className="text-gray-900 font-bold text-lg">{tx.name}</p>
+                      {/* FX Auto-Settled Badge */}
+                      {tx.note && tx.note.includes('emergency INR') && (
+                        <motion.span
+                          initial={{ opacity: 0, scale: 0.8 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          className="px-2 py-1 bg-red-600 text-white text-xs font-black rounded-full border border-red-700 shadow-md"
+                        >
+                          FX Auto-Settled
+                        </motion.span>
+                      )}
+                    </div>
                     <p className="text-gray-600 text-xs font-bold uppercase">{tx.time}</p>
                   </div>
-                  <p className={`font-black text-xl ${tx.amountColor}`}>
-                    {tx.amount}
-                  </p>
+                  <div className="text-right flex items-center gap-3">
+                    <p className={`font-black text-xl ${tx.amountColor}`}>
+                      {tx.amount}
+                    </p>
+                    {/* Download Receipt Button */}
+                    <motion.button
+                      whileHover={{ scale: 1.1 }}
+                      whileTap={{ scale: 0.95 }}
+                      onClick={() => handleDownloadReceipt(tx)}
+                      className="p-2 bg-white hover:bg-gray-300 rounded-full transition-all border-2 border-gray-500 shadow-md"
+                      title="Download Receipt"
+                    >
+                      <Download className="w-5 h-5 text-gray-900" />
+                    </motion.button>
+                  </div>
                 </div>
               </motion.div>
             ))}
@@ -687,8 +1079,8 @@ function GlobePay() {
           <motion.button
             whileHover={{ scale: 1.2 }}
             whileTap={{ scale: 0.9 }}
-            onClick={() => setShowQRScanner(true)}
-            className="w-16 h-16 rounded-full bg-gradient-to-br from-white to-gray-200 flex items-center justify-center text-gray-900 font-black border-2 border-gray-400 shadow-2xl active:scale-90 transition-transform hover:shadow-2xl hover:from-gray-100 hover:to-gray-300"
+            onClick={handleOpenQRScanner}
+            className="w-16 h-16 rounded-full bg-gradient-to-br from-white to-gray-200 flex items-center justify-center text-gray-900 font-black border-2 border-gray-400 shadow-2xl active:scale-90 transition-transform"
             title="Click to Pay"
           >
             <QrCode className="w-8 h-8" />
@@ -708,7 +1100,7 @@ function GlobePay() {
             whileHover={{ scale: 1.2 }}
             whileTap={{ scale: 0.9 }}
             onClick={() => setShowWallet(true)}
-            className="w-16 h-16 rounded-full bg-gradient-to-br from-gray-300 to-gray-400 flex items-center justify-center text-gray-900 font-black border-2 border-gray-500 shadow-2xl active:scale-90 transition-transform hover:shadow-2xl hover:from-gray-200 hover:to-gray-300"
+            className="w-16 h-16 rounded-full bg-gradient-to-br from-gray-300 to-gray-400 flex items-center justify-center text-gray-900 font-black border-2 border-gray-500 shadow-2xl active:scale-90 transition-transform"
             title="My Wallet"
           >
             <Wallet className="w-8 h-8" />
@@ -720,7 +1112,7 @@ function GlobePay() {
           <motion.div
             initial={{ opacity: 0, x: 10 }}
             whileHover={{ opacity: 1, x: 0 }}
-            className="bg-gradient-to-r from-white to-gray-200 text-gray-900 font-black rounded-lg px-4 py-2 text-sm shadow-lg whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity text-center leading-tight"
+            className="bg-gradient-to-r from-white to-gray-200 text-gray-900 font-black rounded-lg px-4 py-2 text-sm shadow-lg whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity text-center"
           >
             <div>Link Your Bank</div>
             <div>Account to GlobePay</div>
@@ -729,13 +1121,427 @@ function GlobePay() {
             whileHover={{ scale: 1.2 }}
             whileTap={{ scale: 0.9 }}
             onClick={() => setShowAddMoney(true)}
-            className="w-16 h-16 rounded-full bg-gradient-to-br from-white to-gray-200 flex items-center justify-center text-gray-900 font-black border-2 border-gray-400 shadow-2xl active:scale-90 transition-transform hover:shadow-2xl hover:from-gray-100 hover:to-gray-300"
+            className="w-16 h-16 rounded-full bg-gradient-to-br from-white to-gray-200 flex items-center justify-center text-gray-900 font-black border-2 border-gray-400 shadow-2xl active:scale-90 transition-transform"
             title="Link Bank Account"
           >
             <Plus className="w-8 h-8" />
           </motion.button>
         </div>
       </div>
+
+      {/* Receipt Modal */}
+      <AnimatePresence>
+        {showReceiptModal && selectedReceipt && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowReceiptModal(false)}
+              className="fixed inset-0 bg-black/80 z-50 backdrop-blur-sm"
+            />
+
+            <motion.div
+              variants={receiptModalVariants}
+              initial="hidden"
+              animate="visible"
+              exit="exit"
+              className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-full max-w-md mx-auto px-6"
+            >
+              <div className="bg-gradient-to-br from-gray-100 to-white border-2 border-gray-400 rounded-3xl p-8 shadow-2xl">
+                <div className="text-center mb-8">
+                  {/* Receipt Header */}
+                  <motion.div
+                    initial={{ opacity: 0, y: -10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.2 }}
+                    className="flex justify-center mb-4"
+                  >
+                    <div className="p-4 bg-gray-200 rounded-full">
+                      <FileText className="w-8 h-8 text-gray-700" />
+                    </div>
+                  </motion.div>
+
+                  <motion.h2
+                    initial={{ opacity: 0, y: -10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.25 }}
+                    className="text-3xl font-black text-gray-900 mb-2"
+                  >
+                    Transaction Receipt
+                  </motion.h2>
+
+                  <motion.p
+                    initial={{ opacity: 0, y: -10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.3 }}
+                    className="text-gray-600 font-bold text-sm"
+                  >
+                    {selectedReceipt.status}
+                  </motion.p>
+                </div>
+
+                {/* Receipt Details */}
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.35 }}
+                  className="bg-gray-50 border-2 border-gray-300 rounded-2xl p-6 mb-6 space-y-4"
+                >
+                  {/* Transaction ID */}
+                  <div className="pb-4 border-b-2 border-gray-300">
+                    <p className="text-gray-600 text-xs font-bold uppercase tracking-widest mb-1">Transaction ID</p>
+                    <p className="text-gray-900 font-black text-sm font-mono">{selectedReceipt.transactionId}</p>
+                  </div>
+
+                  {/* Merchant */}
+                  <div className="pb-4 border-b-2 border-gray-300">
+                    <p className="text-gray-600 text-xs font-bold uppercase tracking-widest mb-1">Merchant</p>
+                    <p className="text-gray-900 font-black text-lg">{selectedReceipt.merchant}</p>
+                  </div>
+
+                  {/* Base Amount */}
+                  <motion.div
+                    initial={{ opacity: 0, x: -10 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: 0.4 }}
+                    className="pb-4 border-b-2 border-gray-300"
+                  >
+                    <p className="text-gray-600 text-xs font-bold uppercase tracking-widest mb-1">Base Amount</p>
+                    <p className="text-gray-900 font-black text-xl">₹{selectedReceipt.baseAmount.toLocaleString()}</p>
+                  </motion.div>
+
+                  {/* FX Fee */}
+                  {selectedReceipt.fxFee > 0 && (
+                    <motion.div
+                      initial={{ opacity: 0, x: -10 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ delay: 0.45 }}
+                      className="pb-4 border-b-2 border-gray-300"
+                    >
+                      <p className="text-gray-600 text-xs font-bold uppercase tracking-widest mb-1">FX Processing Fee</p>
+                      <div className="flex items-center justify-between">
+                        <p className="text-gray-900 font-black text-lg">₹{selectedReceipt.fxFee.toFixed(2)}</p>
+                        <span className="px-2 py-1 bg-red-100 border-2 border-red-300 text-red-700 text-xs font-bold rounded">Emergency Fee</span>
+                      </div>
+                    </motion.div>
+                  )}
+
+                  {/* Total Amount */}
+                  <motion.div
+                    initial={{ opacity: 0, x: -10 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: 0.5 }}
+                    className="pt-4 bg-gradient-to-r from-gray-900 to-gray-800 rounded-xl p-4"
+                  >
+                    <p className="text-gray-400 text-xs font-bold uppercase tracking-widest mb-2">Total Amount Deducted</p>
+                    <p className="text-white font-black text-2xl">₹{selectedReceipt.totalAmount.toLocaleString()}</p>
+                  </motion.div>
+
+                  {/* Timestamp */}
+                  <motion.div
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.55 }}
+                    className="text-center pt-4"
+                  >
+                    <p className="text-gray-600 text-xs font-bold uppercase tracking-widest">Timestamp</p>
+                    <p className="text-gray-900 font-bold text-sm mt-1">
+                      {new Date(selectedReceipt.timestamp).toLocaleString()}
+                    </p>
+                  </motion.div>
+                </motion.div>
+
+                {/* Action Buttons */}
+                <div className="space-y-3">
+                  {/* Download Button */}
+                  <motion.button
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.6 }}
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                    onClick={() => {
+                      // Simulate download
+                      alert(`Receipt downloaded: ${selectedReceipt.transactionId}`);
+                    }}
+                    className="w-full py-4 bg-gradient-to-r from-gray-800 to-gray-700 text-white font-black rounded-lg hover:from-gray-700 hover:to-gray-600 transition-all uppercase tracking-widest border-2 border-gray-900 shadow-lg active:scale-95 flex items-center justify-center gap-2"
+                  >
+                    <Download className="w-5 h-5" />
+                    Download PDF
+                  </motion.button>
+
+                  {/* Close Button */}
+                  <motion.button
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.65 }}
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    onClick={() => setShowReceiptModal(false)}
+                    className="w-full py-3 bg-white text-gray-900 font-bold rounded-lg hover:bg-gray-200 transition-all border-2 border-gray-400 uppercase tracking-wide active:scale-95"
+                  >
+                    Close
+                  </motion.button>
+                </div>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
+      {/* Success Payment Card Overlay */}
+      <AnimatePresence>
+        {showSuccessCard && paymentBreakdown && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowSuccessCard(false)}
+              className="fixed inset-0 bg-black/80 z-50 backdrop-blur-sm"
+            />
+
+            <motion.div
+              variants={successCardVariants}
+              initial="hidden"
+              animate="visible"
+              exit="exit"
+              className="fixed bottom-1/2 translate-y-1/2 left-1/2 -translate-x-1/2 z-50 w-full max-w-md mx-auto px-6"
+            >
+              <div className="bg-gradient-to-br from-green-500 to-emerald-600 border-2 border-green-700 rounded-3xl p-8 shadow-2xl">
+                <div className="flex flex-col items-center text-center">
+                  {/* Success Icon */}
+                  <motion.div
+                    initial={{ scale: 0, rotate: -180 }}
+                    animate={{ scale: 1, rotate: 0 }}
+                    transition={{ type: 'spring', stiffness: 200, damping: 15 }}
+                    className="mb-6"
+                  >
+                    <CheckCircle className="w-20 h-20 text-white drop-shadow-lg" />
+                  </motion.div>
+
+                  {/* Success Title */}
+                  <motion.h2
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.2 }}
+                    className="text-4xl font-black text-white mb-2 uppercase tracking-wider drop-shadow-lg"
+                  >
+                    Payment Success
+                  </motion.h2>
+
+                  {/* Merchant Name */}
+                  <motion.p
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.3 }}
+                    className="text-green-100 font-bold text-lg mb-6"
+                  >
+                    {paymentBreakdown.merchant}
+                  </motion.p>
+
+                  {/* Payment Breakdown */}
+                  <motion.div
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.4 }}
+                    className="w-full bg-white/20 border-2 border-white/30 rounded-2xl p-6 mb-6 backdrop-blur-sm"
+                  >
+                    {/* Total Amount */}
+                    <div className="mb-6 pb-6 border-b-2 border-white/30">
+                      <p className="text-green-100 text-sm font-bold uppercase tracking-widest mb-2">Total Amount</p>
+                      <p className="text-4xl font-black text-white">
+                        ${paymentBreakdown.totalUSD.toFixed(2)}
+                      </p>
+                    </div>
+
+                    {/* Breakdown */}
+                    <div className="space-y-4">
+                      {/* USD Deduction */}
+                      <motion.div
+                        initial={{ opacity: 0, x: -20 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        transition={{ delay: 0.5 }}
+                        className="flex justify-between items-center"
+                      >
+                        <div>
+                          <p className="text-green-100 text-xs font-bold uppercase tracking-widest">USD Deducted</p>
+                          <p className="text-white font-black text-lg">
+                            ${paymentBreakdown.deductedUSD.toFixed(2)}
+                          </p>
+                        </div>
+                        <div className="text-4xl">💵</div>
+                      </motion.div>
+
+                      {/* Separator */}
+                      {paymentBreakdown.deductedINR > 0 && (
+                        <>
+                          <div className="flex items-center gap-3">
+                            <div className="flex-1 h-px bg-white/30"></div>
+                            <span className="text-white/60 text-xs font-bold">+</span>
+                            <div className="flex-1 h-px bg-white/30"></div>
+                          </div>
+
+                          {/* INR Deduction */}
+                          <motion.div
+                            initial={{ opacity: 0, x: -20 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            transition={{ delay: 0.6 }}
+                            className="flex justify-between items-center"
+                          >
+                            <div>
+                              <p className="text-green-100 text-xs font-bold uppercase tracking-widest">INR Deducted (Emergency)</p>
+                              <p className="text-white font-black text-lg">
+                                ₹{paymentBreakdown.deductedINR.toFixed(0)}
+                              </p>
+                              <p className="text-green-100 text-xs mt-1">
+                                (Including {(paymentBreakdown.emergencyFee).toFixed(0)}₹ fee)
+                              </p>
+                            </div>
+                            <div className="text-4xl">🇮🇳</div>
+                          </motion.div>
+                        </>
+                      )}
+                    </div>
+                  </motion.div>
+
+                  {/* Emergency Fee Notice */}
+                  {paymentBreakdown.emergencyFee > 0 && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.7 }}
+                      className="w-full bg-white/10 border-l-4 border-white rounded-lg p-3 mb-6 text-left"
+                    >
+                      <p className="text-green-100 text-xs font-bold uppercase tracking-widest">Emergency Fee Applied</p>
+                      <p className="text-white font-bold text-sm mt-1">
+                        2% fee (₹{paymentBreakdown.emergencyFee.toFixed(0)}) added to cover USD shortfall
+                      </p>
+                    </motion.div>
+                  )}
+
+                  {/* Dismiss Button */}
+                  <motion.button
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.8 }}
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                    onClick={() => setShowSuccessCard(false)}
+                    className="w-full py-4 bg-white text-green-600 font-black rounded-lg hover:bg-gray-100 transition-all uppercase tracking-widest border-2 border-white shadow-lg active:scale-95"
+                  >
+                    Done
+                  </motion.button>
+                </div>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
+      {/* Global Liquidity Insufficient Error Overlay */}
+      <AnimatePresence>
+        {showLiquidityError && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowLiquidityError(false)}
+              className="fixed inset-0 bg-black/80 z-50 backdrop-blur-sm"
+            />
+
+            <motion.div
+              variants={errorOverlayVariants}
+              initial="hidden"
+              animate="visible"
+              exit="exit"
+              className="fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-50 w-full max-w-md mx-auto px-6"
+            >
+              <div className="bg-gradient-to-br from-red-600 to-red-700 border-2 border-red-800 rounded-3xl p-8 shadow-2xl">
+                <div className="flex flex-col items-center text-center">
+                  {/* Error Icon */}
+                  <motion.div
+                    initial={{ scale: 0 }}
+                    animate={{ scale: 1 }}
+                    transition={{ delay: 0.2, type: 'spring', stiffness: 200 }}
+                    className="mb-6"
+                  >
+                    <AlertCircle className="w-16 h-16 text-white drop-shadow-lg" />
+                  </motion.div>
+
+                  {/* Error Title */}
+                  <motion.h2
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.3 }}
+                    className="text-4xl font-black text-white mb-3 uppercase tracking-wider drop-shadow-lg"
+                  >
+                    Global Liquidity
+                  </motion.h2>
+                  <motion.h2
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.35 }}
+                    className="text-4xl font-black text-white mb-6 uppercase tracking-wider drop-shadow-lg"
+                  >
+                    Insufficient
+                  </motion.h2>
+
+                  {/* Error Description */}
+                  <motion.p
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.4 }}
+                    className="text-red-100 font-bold text-lg mb-2"
+                  >
+                    Your USD and INR balances are insufficient for this transaction.
+                  </motion.p>
+
+                  <motion.p
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.45 }}
+                    className="text-red-100 font-bold text-sm mb-6"
+                  >
+                    Required shortfall: ₹{Math.ceil(shortfallAmount).toLocaleString()}
+                  </motion.p>
+
+                  {/* Buttons */}
+                  <div className="w-full space-y-3">
+                    {/* Auto-Convert INR Button */}
+                    <motion.button
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.5 }}
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                      onClick={handleAutoConvertINR}
+                      className="w-full py-4 bg-gradient-to-r from-white to-gray-100 text-red-700 font-black rounded-lg hover:from-gray-50 hover:to-white transition-all uppercase tracking-widest border-2 border-white shadow-lg active:scale-95"
+                    >
+                      Auto-Convert INR
+                    </motion.button>
+
+                    {/* Dismiss Button */}
+                    <motion.button
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.55 }}
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                      onClick={() => setShowLiquidityError(false)}
+                      className="w-full py-3 bg-red-800 text-white font-bold rounded-lg hover:bg-red-900 transition-all uppercase tracking-wide border-2 border-red-600 active:scale-95"
+                    >
+                      Dismiss
+                    </motion.button>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
 
       {/* Currency Trends Modal */}
       <AnimatePresence>
@@ -864,7 +1670,7 @@ function GlobePay() {
                 </div>
 
                 {/* Stats */}
-                <div className="bg-gradient-to-br from-white to-gray-200 border-2 border-gray-400 rounded-lg p-4 shadow-md mt-8">
+                <div className="bg-gradient-to-br from-white to-gray-200 border-2 border-gray-400 rounded-lg p-4 shadow-md mb-6">
                   <h4 className="text-gray-900 font-black mb-3 uppercase tracking-widest">Weekly Statistics</h4>
                   <div className="grid grid-cols-3 gap-4 text-sm">
                     <div>
@@ -881,6 +1687,40 @@ function GlobePay() {
                     </div>
                   </div>
                 </div>
+
+                {/* AI Strategy Section with Quick Convert Button */}
+                <motion.div
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.2 }}
+                  className="bg-gradient-to-br from-blue-100 to-blue-50 border-2 border-blue-400 rounded-lg p-6 shadow-md"
+                >
+                  <div className="flex items-start gap-3 mb-4">
+                    <ZapIcon className="w-6 h-6 text-blue-600 flex-shrink-0 mt-1" />
+                    <div className="flex-1">
+                      <h4 className="text-blue-900 font-black text-lg mb-2">AI Strategy for {activeChartTab}</h4>
+                      <p className="text-blue-800 text-sm font-bold leading-relaxed mb-4">
+                        Based on current market analysis, {activeChartTab} shows strong potential at ₹{currentExchangeRate.toFixed(2)} per unit. 
+                        This is an optimal time to acquire before the projected 2.5% increase over 24 hours. Secure the AI-recommended rate now.
+                      </p>
+                      
+                      {/* Quick Convert Button */}
+                      <motion.button
+                        whileHover={{ scale: 1.05 }}
+                        whileTap={{ scale: 0.95 }}
+                        onClick={handleQuickConvert}
+                        className="w-full py-3 bg-gradient-to-r from-blue-600 to-blue-700 text-white font-black rounded-lg hover:from-blue-700 hover:to-blue-800 transition-all uppercase tracking-widest border-2 border-blue-800 shadow-lg active:scale-95 flex items-center justify-center gap-2"
+                      >
+                        <ZapIcon className="w-5 h-5" />
+                        Quick Convert to {activeChartTab}
+                      </motion.button>
+                      
+                      <p className="text-blue-700 text-xs mt-3 font-semibold text-center">
+                        Guaranteed rate: ₹{currentExchangeRate.toFixed(2)} / {activeChartTab}
+                      </p>
+                    </div>
+                  </div>
+                </motion.div>
               </div>
             </motion.div>
           </>
@@ -925,29 +1765,34 @@ function GlobePay() {
 
                 {/* Wallet Balance Display */}
                 <div className="mb-8">
-                  <h3 className="text-lg font-black text-gray-900 mb-4 uppercase tracking-widest">Converted Currencies</h3>
+                  <h3 className="text-lg font-black text-gray-900 mb-4 uppercase tracking-widest">Your Balances</h3>
                   <div className="grid grid-cols-2 gap-3 mb-6">
-                    {Object.entries(walletCurrencies).map(([currency, balance]) => (
+                    {[
+                      { currency: 'INR', balance: localWalletCurrencies.INR },
+                      { currency: 'USD', balance: localWalletCurrencies.USD },
+                      { currency: 'EUR', balance: localWalletCurrencies.EUR },
+                      { currency: 'GBP', balance: localWalletCurrencies.GBP }
+                    ].map(({ currency, balance }) => (
                       <motion.div
                         key={currency}
                         whileHover={{ scale: 1.05 }}
                         className="bg-gradient-to-br from-gray-200 to-gray-300 text-gray-900 border-2 border-gray-400 rounded-lg p-4 cursor-pointer hover:shadow-lg transition-all shadow-md"
                       >
                         <p className="text-gray-700 text-xs font-bold uppercase tracking-widest">{currency}</p>
-                        <p className="text-2xl font-black text-gray-900">{typeof balance === 'number' ? balance.toLocaleString() : balance}</p>
+                        <p className="text-2xl font-black text-gray-900">{balance.toLocaleString()}</p>
                       </motion.div>
                     ))}
                   </div>
                 </div>
 
-                {/* Currency Converter */}
+                {/* Currency Converter - FROM INR */}
                 <div className="mb-8">
                   <h3 className="text-lg font-black text-gray-900 mb-4 uppercase tracking-widest">Convert Currency</h3>
                   
                   <div className="space-y-3">
-                    {/* From Amount */}
+                    {/* From Amount (INR) */}
                     <div>
-                      <label className="block text-sm font-black text-gray-900 mb-2 uppercase tracking-widest">Amount (INR)</label>
+                      <label className="block text-sm font-black text-gray-900 mb-2 uppercase tracking-widest">Amount (in INR)</label>
                       <div className="relative">
                         <span className="absolute left-4 top-1/2 transform -translate-y-1/2 text-2xl text-gray-700 font-black">₹</span>
                         <input
@@ -955,7 +1800,7 @@ function GlobePay() {
                           placeholder="Enter INR amount"
                           value={convertedAmount}
                           onChange={(e) => setConvertedAmount(e.target.value)}
-                          className="w-full pl-10 pr-4 py-3 bg-white border-2 border-gray-400 rounded-lg text-gray-900 placeholder-gray-500 focus:outline-none focus:border-gray-600 focus:ring-2 focus:ring-gray-400/30 transition-all font-bold"
+                          className="w-full pl-10 pr-4 py-3 bg-white border-2 border-gray-400 rounded-lg text-gray-900 placeholder-gray-500 focus:outline-none focus:border-gray-600 focus:ring-2 focus:ring-gray-400/30 transition-all"
                         />
                       </div>
                     </div>
@@ -966,28 +1811,32 @@ function GlobePay() {
                       <select
                         value={convertTo}
                         onChange={(e) => setConvertTo(e.target.value)}
-                        className="w-full px-4 py-3 bg-white border-2 border-gray-400 rounded-lg text-gray-900 font-bold focus:outline-none focus:border-gray-600 focus:ring-2 focus:ring-gray-400/30 transition-all uppercase cursor-pointer"
+                        className="w-full px-4 py-3 bg-white border-2 border-gray-400 rounded-lg text-gray-900 font-bold focus:outline-none focus:border-gray-600 focus:ring-2 focus:ring-gray-400/30 transition-all"
                       >
-                        {Object.keys(conversionRates).map((curr) => (
-                          <option key={curr} value={curr} className="bg-white">
-                            {curr}
-                          </option>
-                        ))}
+                        <option value="USD">USD</option>
+                        <option value="EUR">EUR</option>
+                        <option value="GBP">GBP</option>
+                        <option value="JPY">JPY</option>
                       </select>
                     </div>
 
-                    {/* Conversion Rate */}
+                    {/* Conversion Rate Display */}
                     <div className="bg-gray-200 border-2 border-gray-400 rounded-lg p-3">
                       <p className="text-gray-700 text-xs font-bold uppercase tracking-widest">Conversion Rate</p>
-                      <p className="text-gray-900 font-black">1 INR = {conversionRates[convertTo]} {convertTo} (Live Rate)</p>
+                      <p className="text-gray-900 font-black">1 INR = {conversionRates[convertTo]} {convertTo}</p>
+                      {convertedAmount && parseFloat(convertedAmount) > 0 && (
+                        <p className="text-gray-800 text-sm font-bold mt-2">
+                          ₹{convertedAmount} = {(parseFloat(convertedAmount) * conversionRates[convertTo]).toFixed(2)} {convertTo}
+                        </p>
+                      )}
                     </div>
 
-                    {/* Convert Button */}
+                    {/* Convert Button - FROM INR TO OTHER CURRENCIES */}
                     <motion.button
                       whileHover={{ scale: 1.05 }}
                       whileTap={{ scale: 0.95 }}
-                      onClick={handleCurrencyConvert}
-                      className="w-full py-3 bg-gradient-to-r from-gray-800 to-gray-700 text-white font-black rounded-lg hover:from-gray-700 hover:to-gray-600 transition-all uppercase tracking-widest border-2 border-gray-800 active:scale-95 shadow-md"
+                      onClick={handleConvertCurrency}
+                      className="w-full py-3 bg-gradient-to-r from-gray-800 to-gray-700 text-white font-black rounded-lg hover:from-gray-700 hover:to-gray-600 transition-all uppercase tracking-widest border-2 border-gray-900 shadow-lg active:scale-95"
                     >
                       Convert Now
                     </motion.button>
@@ -1000,7 +1849,7 @@ function GlobePay() {
                   <div className="space-y-2 text-sm">
                     <div className="flex justify-between">
                       <span className="text-gray-700 font-bold">Total Holdings</span>
-                      <span className="text-gray-900 font-black">₹{totalBalance.toLocaleString()}+</span>
+                      <span className="text-gray-900 font-black">₹{totalBalance.toLocaleString()}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-gray-700 font-bold">Safe Score</span>
@@ -1043,16 +1892,47 @@ function GlobePay() {
 
               <div className="px-6 pb-10">
                 <div className="flex justify-between items-center mb-8">
-                  <h2 className="text-3xl font-black text-gray-900">Link Your Bank Account</h2>
+                  <h2 className="text-3xl font-black text-gray-900">
+                    {quickConvertCurrency ? `Convert to ${quickConvertCurrency}` : 'Link Your Bank Account'}
+                  </h2>
                   <motion.button
                     whileHover={{ scale: 1.1 }}
                     whileTap={{ scale: 0.9 }}
-                    onClick={() => setShowAddMoney(false)}
+                    onClick={() => {
+                      setShowAddMoney(false);
+                      setQuickConvertCurrency(null);
+                      setQuickConvertRate(null);
+                    }}
                     className="p-2 hover:bg-gray-300 rounded-full transition-colors border-2 border-gray-400 active:scale-90 bg-white text-gray-700"
                   >
                     <X className="w-6 h-6" />
                   </motion.button>
                 </div>
+
+                {/* Quick Convert Info Banner */}
+                {quickConvertCurrency && quickConvertRate && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="mb-6 bg-blue-100 border-2 border-blue-400 rounded-lg p-4"
+                  >
+                    <p className="text-blue-900 font-bold text-sm">
+                      🎯 AI-Recommended Rate: <span className="text-lg font-black">₹{quickConvertRate.toFixed(2)} / {quickConvertCurrency}</span>
+                    </p>
+                    <p className="text-blue-800 text-xs mt-2">Locked in for this transaction</p>
+                  </motion.div>
+                )}
+
+                {/* Info Banner for Shortfall Auto-Fill */}
+                {shortfallAmount > 0 && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="mb-6 bg-blue-100 border-2 border-blue-400 rounded-lg p-4 text-center"
+                  >
+                    <p className="text-blue-900 font-bold text-sm">Auto-filled with required shortfall: <span className="text-lg font-black">₹{Math.ceil(shortfallAmount)}</span></p>
+                  </motion.div>
+                )}
 
                 <div className="mb-8">
                   <label className="block text-sm font-black text-gray-900 mb-4 uppercase tracking-widest">
@@ -1088,7 +1968,7 @@ function GlobePay() {
                       placeholder="Enter amount"
                       value={amount}
                       onChange={(e) => setAmount(e.target.value)}
-                      className="w-full pl-10 pr-4 py-4 bg-white border-2 border-gray-400 rounded-lg text-gray-900 text-lg placeholder-gray-500 focus:outline-none focus:border-gray-600 focus:ring-2 focus:ring-gray-400/30 transition-all font-bold"
+                      className="w-full pl-10 pr-4 py-4 bg-white border-2 border-gray-400 rounded-lg text-gray-900 text-lg placeholder-gray-500 focus:outline-none focus:border-gray-600 focus:ring-2 focus:ring-gray-400/30 transition-all"
                     />
                   </div>
                 </div>
@@ -1097,15 +1977,21 @@ function GlobePay() {
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
                   onClick={handleAddMoney}
-                  className="w-full py-4 bg-gradient-to-r from-gray-800 to-gray-700 text-white font-black rounded-lg hover:from-gray-700 hover:to-gray-600 transition-all mb-4 uppercase tracking-widest border-2 border-gray-800 active:scale-95 shadow-md text-lg"
+                  disabled={loadingAddMoney}
+                  className="w-full py-4 bg-gradient-to-r from-gray-800 to-gray-700 text-white font-black rounded-lg hover:from-gray-700 hover:to-gray-600 transition-all mb-4 uppercase tracking-widest border-2 border-gray-900 shadow-lg active:scale-95 disabled:opacity-50"
                 >
-                  Add ₹{amount || '0'} to {selectedBank}
+                  {loadingAddMoney ? 'Processing...' : `Add ₹${amount || '0'} to ${selectedBank}`}
                 </motion.button>
 
                 <motion.button
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
-                  onClick={() => setShowAddMoney(false)}
+                  onClick={() => {
+                    setShowAddMoney(false);
+                    setShortfallAmount(0);
+                    setQuickConvertCurrency(null);
+                    setQuickConvertRate(null);
+                  }}
                   className="w-full py-4 bg-white text-gray-900 font-bold rounded-lg hover:bg-gray-200 transition-all border-2 border-gray-400 uppercase tracking-wide active:scale-95"
                 >
                   Cancel
@@ -1116,7 +2002,7 @@ function GlobePay() {
         )}
       </AnimatePresence>
 
-      {/* QR Scanner Modal */}
+      {/* QR Scanner Modal with Live Camera Feed */}
       <AnimatePresence>
         {showQRScanner && (
           <motion.div
@@ -1124,65 +2010,145 @@ function GlobePay() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="fixed inset-0 bg-black z-50 flex flex-col"
+            onAnimationComplete={() => {
+              if (showQRScanner && !cameraActive) {
+                startScanner();
+              }
+            }}
           >
             <div className="relative z-10 flex justify-between items-center p-6 bg-gradient-to-b from-gray-900 via-gray-800 to-transparent border-b-2 border-gray-700">
-              <h2 className="text-2xl font-black text-white uppercase tracking-widest">Scan QR Code</h2>
+              <h2 className="text-2xl font-black text-white uppercase tracking-widest flex items-center gap-2">
+                <Camera className="w-6 h-6" />
+                Scan QR Code
+              </h2>
               <motion.button
                 whileHover={{ scale: 1.1 }}
                 whileTap={{ scale: 0.9 }}
-                onClick={() => setShowQRScanner(false)}
+                onClick={handleCloseQRScanner}
                 className="p-2 hover:bg-gray-700 rounded-full transition-colors border-2 border-gray-600 active:scale-90 text-white"
               >
                 <X className="w-6 h-6" />
               </motion.button>
             </div>
 
-            <div className="flex-1 relative flex items-center justify-center overflow-hidden">
-              <video
-                ref={videoRef}
-                autoPlay
-                playsInline
-                className="absolute inset-0 w-full h-full object-cover"
-              />
+            <div className="flex-1 relative flex items-center justify-center overflow-hidden bg-black">
+              {cameraError ? (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  className="text-center px-6 max-w-sm"
+                >
+                  <AlertCircle className="w-16 h-16 text-red-500 mx-auto mb-4" />
+                  <h3 className="text-2xl font-black text-white mb-2">Camera Error</h3>
+                  <p className="text-gray-300 font-bold mb-6">{cameraError}</p>
+                  <motion.button
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                    onClick={() => startScanner()}
+                    className="px-8 py-3 bg-white text-black font-black rounded-lg hover:bg-gray-200 transition-all uppercase tracking-widest"
+                  >
+                    Retry
+                  </motion.button>
+                </motion.div>
+              ) : (
+                <>
+                  {/* Live Video Feed */}
+                  <motion.video
+                    ref={videoRef}
+                    autoPlay
+                    playsInline
+                    className="absolute inset-0 w-full h-full object-cover"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: cameraActive ? 1 : 0 }}
+                  />
 
-              <div className="relative w-64 h-64 border-4 border-gray-400 rounded-lg bg-gray-400/10">
-                <div className="absolute top-0 left-0 w-8 h-8 border-t-4 border-l-4 border-gray-300 rounded-tl-lg" />
-                <div className="absolute top-0 right-0 w-8 h-8 border-t-4 border-r-4 border-gray-300 rounded-tr-lg" />
-                <div className="absolute bottom-0 left-0 w-8 h-8 border-b-4 border-l-4 border-gray-300 rounded-bl-lg" />
-                <div className="absolute bottom-0 right-0 w-8 h-8 border-b-4 border-r-4 border-gray-300 rounded-br-lg" />
-              </div>
+                  {/* Scanning Frame Overlay */}
+                  {cameraActive && (
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.8 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      className="relative w-72 h-72 border-4 border-white rounded-lg bg-transparent"
+                    >
+                      {/* Corner Indicators */}
+                      <div className="absolute top-0 left-0 w-8 h-8 border-t-4 border-l-4 border-white rounded-tl-lg" />
+                      <div className="absolute top-0 right-0 w-8 h-8 border-t-4 border-r-4 border-white rounded-tr-lg" />
+                      <div className="absolute bottom-0 left-0 w-8 h-8 border-b-4 border-l-4 border-white rounded-bl-lg" />
+                      <div className="absolute bottom-0 right-0 w-8 h-8 border-b-4 border-r-4 border-white rounded-br-lg" />
+
+                      {/* Animated Scanning Line */}
+                      <motion.div
+                        animate={{ y: ['-100%', '100%'] }}
+                        transition={{ duration: 2, repeat: Infinity }}
+                        className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-b from-transparent via-white to-transparent"
+                      />
+                    </motion.div>
+                  )}
+                </>
+              )}
             </div>
 
             <motion.div
               initial={{ y: 100 }}
               animate={{ y: 0 }}
-              className="relative z-10 bg-gradient-to-t from-gray-900 via-gray-800 to-transparent px-6 py-8 flex gap-4 border-t-2 border-gray-700"
+              className="relative z-10 bg-gradient-to-t from-gray-900 via-gray-800 to-transparent px-6 py-8 flex flex-col gap-4 border-t-2 border-gray-700"
             >
-              <motion.button
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={() => setFlashOn(!flashOn)}
-                className={`flex-1 py-4 rounded-lg font-black transition-all flex items-center justify-center gap-2 uppercase tracking-wider border-2 ${
-                  flashOn
-                    ? 'bg-yellow-400 text-black border-yellow-500'
-                    : 'bg-gradient-to-br from-gray-700 to-gray-800 text-gray-300 border-gray-600 hover:border-gray-500'
-                }`}
-              >
-                <Flashlight className="w-5 h-5" />
-                Flash
-              </motion.button>
+              {/* Insufficient USD Warning */}
+              {insufficientUSD && cameraActive && (
+                <motion.div
+                  initial={{ opacity: 0, y: -10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="bg-yellow-500/20 border-2 border-yellow-400 rounded-lg p-3 text-center"
+                >
+                  <p className="text-yellow-200 font-bold text-sm">
+                    ⚠️ Insufficient USD. Remaining amount will be settled from INR with a 2% emergency fee
+                  </p>
+                </motion.div>
+              )}
 
-              <motion.button
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={() => {
-                  alert('Payment of ₹500 successful!');
-                  setShowQRScanner(false);
-                }}
-                className="flex-1 py-4 bg-gradient-to-r from-white to-gray-200 text-gray-900 font-black rounded-lg hover:from-gray-100 hover:to-gray-300 transition-all uppercase tracking-widest border-2 border-gray-400 active:scale-95 text-lg"
+              <div className="flex gap-4">
+                <motion.button
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={() => setFlashOn(!flashOn)}
+                  className={`flex-1 py-4 rounded-lg font-black transition-all flex items-center justify-center gap-2 uppercase tracking-wider border-2 ${
+                    flashOn
+                      ? 'bg-yellow-400 text-black border-yellow-500'
+                      : 'bg-gradient-to-br from-gray-700 to-gray-800 text-gray-300 border-gray-600 hover:border-gray-500'
+                  }`}
+                  disabled={!cameraActive}
+                >
+                  <Flashlight className="w-5 h-5" />
+                  Flash
+                </motion.button>
+
+                <motion.button
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={handleCapture}
+                  disabled={loadingQRPay || !cameraActive}
+                  className="flex-1 py-4 bg-gradient-to-r from-white to-gray-200 text-gray-900 font-black rounded-lg hover:from-gray-100 hover:to-gray-300 transition-all uppercase tracking-widest border-2 border-white shadow-lg active:scale-95 disabled:opacity-50"
+                >
+                  {loadingQRPay ? (
+                    <motion.div
+                      animate={{ rotate: 360 }}
+                      transition={{ duration: 1, repeat: Infinity }}
+                      className="w-5 h-5 border-2 border-gray-900 border-t-transparent rounded-full mx-auto"
+                    />
+                  ) : (
+                    'Capture'
+                  )}
+                </motion.button>
+              </div>
+
+              {/* Settlement Rate Label */}
+              <motion.p
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.2 }}
+                className="text-center text-gray-300 font-bold text-sm"
               >
-                Payment Successful
-              </motion.button>
+                Settling at ₹<span className="text-white font-black">{currentExchangeRate.toFixed(1)}</span> / USD
+              </motion.p>
             </motion.div>
           </motion.div>
         )}
