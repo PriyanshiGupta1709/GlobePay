@@ -1,6 +1,7 @@
 # 🌍 GlobePay: AI-Powered Global Fintech Node
 
-GlobePay is a high-fidelity, real-time cross-border settlement prototype. It enables users to manage multi-currency vaults (INR/USD) and perform instant merchant payments using a unique **Emergency Shortfall Logic**—ensuring payments never fail even if a specific currency balance is low.
+GlobePay isn’t just another payment app—it’s a real-world problem solver.
+We make sending money worldwide as easy as scanning a QR code, and as profitable as having an AI financial advisor in your pocket.” That help users to reduce poor forex timing, avoid blind top-ups, and make smarter international payment decisions.
 
 ![GlobePay Header](https://raw.githubusercontent.com/PriyanshiGupta1709/GlobePay/main/public/dashboard-preview.png) *(Note: Add a screenshot here later!)*
 
